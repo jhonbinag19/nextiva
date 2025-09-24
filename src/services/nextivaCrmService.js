@@ -6,16 +6,80 @@ const { createApiError } = require('../utils/errorUtils');
 const NEXTIVA_API_BASE_URL = process.env.NEXTIVA_API_BASE_URL || 'https://api.thrio.com';
 
 /**
+ * Refresh Thrio access token using refresh token
+ * @returns {Promise<Object>} Refresh result
+ */
+const refreshThrioToken = async () => {
+  try {
+    const refreshToken = process.env.THRIO_REFRESH_TOKEN;
+    const username = process.env.THRIO_USERNAME;
+    const password = process.env.THRIO_PASSWORD;
+    
+    if (!refreshToken && !username) {
+      throw new Error('No refresh token or username available for token refresh');
+    }
+    
+    // If we have username/password, re-authenticate
+    if (username && password) {
+      // Import the authentication function from authController
+      const { authenticateWithThrio } = require('../controllers/authController');
+      const result = await authenticateWithThrio(username, password);
+      
+      if (result.success) {
+        process.env.THRIO_ACCESS_TOKEN = result.accessToken;
+        if (result.refreshToken) {
+          process.env.THRIO_REFRESH_TOKEN = result.refreshToken;
+        }
+        logger.info('Thrio token refreshed successfully using username/password');
+        return { success: true, accessToken: result.accessToken };
+      }
+      
+      throw new Error('Failed to refresh token using username/password');
+    }
+    
+    // If we only have refresh token, use it (implementation depends on Thrio API)
+    // This is a placeholder - implement based on Thrio's refresh token endpoint
+    logger.warn('Refresh token only flow not implemented yet');
+    throw new Error('Refresh token only flow not implemented');
+    
+  } catch (error) {
+    logger.error('Failed to refresh Thrio token:', error.message);
+    return { success: false, error: error.message };
+  }
+};
+
+/**
+ * Get Thrio access token from environment or provided credentials
+ * @param {string} apiKey - Optional API key (fallback to environment token)
+ * @returns {string} Access token
+ */
+const getThrioAccessToken = (apiKey) => {
+  // Priority: provided apiKey > environment token > throw error
+  if (apiKey) {
+    return apiKey;
+  }
+  
+  const envToken = process.env.THRIO_ACCESS_TOKEN;
+  if (envToken) {
+    return envToken;
+  }
+  
+  throw new Error('No Thrio access token available. Please provide apiKey or set THRIO_ACCESS_TOKEN environment variable.');
+};
+
+/**
  * Create axios instance for Nextiva API
- * @param {string} apiKey - API key for authentication
+ * @param {string} apiKey - API key for authentication (optional, will use environment token if not provided)
  * @returns {Object} Axios instance
  */
 const createApiClient = (apiKey) => {
+  const accessToken = getThrioAccessToken(apiKey);
+  
   return axios.create({
     baseURL: NEXTIVA_API_BASE_URL,
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      'Authorization': `Bearer ${accessToken}`,
       'Accept': 'application/json'
     },
     timeout: 30000 // 30 seconds timeout
@@ -23,14 +87,35 @@ const createApiClient = (apiKey) => {
 };
 
 /**
- * Handle API errors
+ * Handle API errors with automatic token refresh on 401
  * @param {Error} error - Axios error object
+ * @param {Function} retryFunction - Function to retry the original request
  * @returns {Object} Standardized error response
  */
-const handleApiError = (error) => {
+const handleApiError = async (error, retryFunction) => {
   if (error.response) {
     // The request was made and the server responded with a status code
     // that falls out of the range of 2xx
+    
+    // Handle 401 Unauthorized - attempt to refresh token and retry
+    if (error.response.status === 401 && retryFunction) {
+      logger.info('Received 401 error, attempting to refresh Thrio token');
+      
+      const refreshResult = await refreshThrioToken();
+      if (refreshResult.success) {
+        logger.info('Token refreshed successfully, retrying original request');
+        // Retry the original request with new token
+        try {
+          return await retryFunction();
+        } catch (retryError) {
+          logger.error('Retry after token refresh failed:', retryError.message);
+          // Fall through to normal error handling
+        }
+      } else {
+        logger.error('Failed to refresh token:', refreshResult.error);
+      }
+    }
+    
     logger.error('Nextiva API error response:', {
       status: error.response.status,
       data: error.response.data,
@@ -76,7 +161,7 @@ const nextivaCrmService = {
    * @returns {Promise<Object>} Response data
    */
   getLeads: async ({ apiKey, page = 1, limit = 20, sortBy = 'createdAt', sortOrder = 'desc' }) => {
-    try {
+    const makeRequest = async () => {
       const client = createApiClient(apiKey);
       const response = await client.get('/leads', {
         params: {
@@ -92,8 +177,12 @@ const nextivaCrmService = {
         leads: response.data.data,
         pagination: response.data.pagination
       };
+    };
+    
+    try {
+      return await makeRequest();
     } catch (error) {
-      return handleApiError(error);
+      return await handleApiError(error, makeRequest);
     }
   },
   

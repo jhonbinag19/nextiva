@@ -22,6 +22,11 @@ const config = {
       baseUrl: process.env.NEXTIVA_API_BASE_URL || 'https://api.nextiva.com',
       timeout: parseInt(process.env.API_TIMEOUT) || 30000
     },
+    thrio: {
+      baseUrl: process.env.THRIO_API_BASE_URL || 'https://login.thrio.com',
+      tokenEndpoint: process.env.THRIO_TOKEN_ENDPOINT || '/provider/token-with-authorities',
+      timeout: parseInt(process.env.API_TIMEOUT) || 30000
+    },
     ghl: {
       baseUrl: process.env.GHL_API_BASE_URL || 'https://services.leadconnectorhq.com',
       oauthUrl: process.env.GHL_OAUTH_URL || 'https://marketplace.gohighlevel.com/oauth/chooselocation',
