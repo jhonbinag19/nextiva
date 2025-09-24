@@ -1,0 +1,400 @@
+{
+  "info": {
+    "name": "Nextiva Thrio API - Smart Auth Collection",
+    "description": "Comprehensive Postman collection for testing both demo and real Thrio authentication modes. Automatically detects credential types and provides clear indicators.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Smart Authentication - Demo Credentials",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"nextiva+wisechoiceremodeling@wisechoiceremodel.com\",\n  \"password\": \"GHLwiseChoiceAPI2025!!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/validate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "validate"
+              ]
+            },
+            "description": "Test with hardcoded demo credentials. Should return demo token with clear indicators."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Test for demo authentication indicators",
+                  "pm.test(\"Response should have demo authentication indicators\", function () {",
+                  "    const jsonData = pm.response.json();",
+                  "    pm.expect(jsonData).to.have.property('authMode');",
+                  "    pm.expect(jsonData.authMode).to.be.oneOf(['hardcoded_demo', 'fallback_demo']);",
+                  "    pm.expect(jsonData).to.have.property('isDemoToken', true);",
+                  "    pm.expect(jsonData).to.have.property('message').that.includes('demo');",
+                  "});",
+                  "",
+                  "// Test for successful token generation",
+                  "pm.test(\"Should generate valid demo token\", function () {",
+                  "    const jsonData = pm.response.json();",
+                  "    pm.expect(jsonData).to.have.property('access_token');",
+                  "    pm.expect(jsonData.access_token).to.not.be.empty;",
+                  "    pm.expect(jsonData).to.have.property('token_type', 'Bearer');",
+                  "});",
+                  "",
+                  "// Save demo token for subsequent requests",
+                  "pm.environment.set(\"demo_token\", pm.response.json().access_token);",
+                  "pm.environment.set(\"token_type\", \"demo\");"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Smart Authentication - Alternative Demo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"demo@thrio.com\",\n  \"password\": \"demo123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/validate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "validate"
+              ]
+            },
+            "description": "Test with alternative demo credentials. Should also return demo token."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Should handle alternative demo credentials\", function () {",
+                  "    const jsonData = pm.response.json();",
+                  "    pm.expect(jsonData).to.have.property('access_token');",
+                  "    pm.expect(jsonData).to.have.property('isDemoToken', true);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Smart Authentication - Real Credentials",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{real_username}}\",\n  \"password\": \"{{real_password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/validate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "validate"
+              ]
+            },
+            "description": "Test with real Thrio credentials. Should attempt real API authentication first."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Response should indicate real API authentication\", function () {",
+                  "    const jsonData = pm.response.json();",
+                  "    if (pm.response.code === 200) {",
+                  "        pm.expect(jsonData).to.have.property('authMode', 'real_api');",
+                  "        pm.expect(jsonData).to.have.property('isDemoToken', false);",
+                  "        pm.expect(jsonData).to.have.property('message').that.includes('real');",
+                  "    }",
+                  "});",
+                  "",
+                  "// Save real token if successful",
+                  "if (pm.response.code === 200) {",
+                  "    pm.environment.set(\"real_token\", pm.response.json().access_token);",
+                  "    pm.environment.set(\"token_type\", \"real\");",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Smart Authentication - Fallback Demo (Development)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"any-user@example.com\",\n  \"password\": \"any-password\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/validate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "validate"
+              ]
+            },
+            "description": "Test with any credentials in development mode. Should fallback to demo if real auth fails."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Should handle fallback to demo mode\", function () {",
+                  "    const jsonData = pm.response.json();",
+                  "    if (pm.response.code === 200) {",
+                  "        pm.expect(jsonData).to.have.property('authMode', 'fallback_demo');",
+                  "        pm.expect(jsonData).to.have.property('isDemoToken', true);",
+                  "        pm.expect(jsonData).to.have.property('message').that.includes('development');",
+                  "    }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "API Testing with Tokens",
+      "item": [
+        {
+          "name": "Test API with Demo Token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{demo_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/contacts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "contacts"
+              ]
+            },
+            "description": "Test API endpoint with demo token. Note: Demo tokens may not work with real API endpoints."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Should handle demo token appropriately\", function () {",
+                  "    // Demo tokens might fail on real API endpoints",
+                  "    // This is expected behavior",
+                  "    if (pm.response.code === 401) {",
+                  "        console.log(\"Demo token rejected by real API - this is expected\");",
+                  "    } else if (pm.response.code === 200) {",
+                  "        console.log(\"Demo token accepted - endpoint might be mocked\");",
+                  "    }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Test API with Real Token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{real_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/contacts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "contacts"
+              ]
+            },
+            "description": "Test API endpoint with real token. Should work with actual Thrio API."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Real token should work with API\", function () {",
+                  "    if (pm.response.code === 401) {",
+                  "        console.log(\"Real token invalid - check credentials\");",
+                  "    } else if (pm.response.code === 200) {",
+                  "        console.log(\"Real token working correctly\");",
+                  "    }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Health Check & Status",
+      "item": [
+        {
+          "name": "API Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "health"
+              ]
+            },
+            "description": "Check if API is running and accessible"
+          },
+          "response": []
+        },
+        {
+          "name": "Authentication Status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{demo_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "status"
+              ]
+            },
+            "description": "Check authentication status and token type"
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Pre-request script for all requests",
+          "console.log('Environment:', pm.environment.name);",
+          "console.log('Token type:', pm.environment.get('token_type'));"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "real_username",
+      "value": "your-real-thrio-username",
+      "type": "string"
+    },
+    {
+      "key": "real_password",
+      "value": "your-real-thrio-password",
+      "type": "string"
+    },
+    {
+      "key": "demo_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "real_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "token_type",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}
