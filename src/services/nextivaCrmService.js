@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { logger } = require('../utils/logger');
+const logger = require('../utils/logger');
 const { createApiError } = require('../utils/errorUtils');
 
 // Base URL for Nextiva API
@@ -152,9 +152,65 @@ const handleApiError = async (error, retryFunction) => {
 };
 
 /**
+ * Validate Thrio credentials by making a test API call
+ * @param {string} username - Thrio username/email
+ * @param {string} password - Thrio password
+ * @returns {Promise<Object>} Validation result with access token if successful
+ */
+const validateCredentials = async (username, password) => {
+  try {
+    logger.info('Validating Thrio credentials', { username });
+    
+    // Create Basic Auth header
+    const credentials = Buffer.from(`${username}:${password}`).toString('base64');
+    
+    const response = await axios.get('https://nextiva.thrio.io/provider/token-with-authorities', {
+      headers: {
+        'Authorization': `Basic ${credentials}`,
+        'Accept': 'application/json'
+      },
+      timeout: 30000
+    });
+    
+    if (response.data && response.data.token) {
+      logger.info('Thrio credentials validated successfully', { username });
+      return {
+        success: true,
+        token: response.data.token,
+        clientLocation: response.data.clientLocation,
+        location: response.data.location
+      };
+    }
+    
+    throw new Error('Invalid response format from Thrio API');
+    
+  } catch (error) {
+    logger.error('Thrio credential validation failed', { 
+      username, 
+      error: error.message,
+      status: error.response?.status,
+      statusText: error.response?.statusText
+    });
+    
+    return {
+      success: false,
+      error: error.response?.data?.message || error.message || 'Authentication failed'
+    };
+  }
+};
+
+/**
  * Nextiva CRM Service
  */
 const nextivaCrmService = {
+  /**
+   * Validate Thrio credentials
+   * @param {string} username - Thrio username/email
+   * @param {string} password - Thrio password
+   * @returns {Promise<Object>} Validation result
+   */
+  validateCredentials,
+  
   /**
    * Get all leads
    * @param {Object} params - Request parameters

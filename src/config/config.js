@@ -10,8 +10,8 @@ const config = {
   
   // JWT configuration
   jwt: {
-    secret: process.env.JWT_SECRET,
-    refreshSecret: process.env.JWT_REFRESH_SECRET,
+    secret: process.env.JWT_SECRET || 'default-jwt-secret-for-development',
+    refreshSecret: process.env.JWT_REFRESH_SECRET || 'default-refresh-secret-for-development',
     expiresIn: '24h',
     refreshExpiresIn: '7d'
   },
@@ -29,11 +29,9 @@ const config = {
     },
     ghl: {
       baseUrl: process.env.GHL_API_BASE_URL || 'https://services.leadconnectorhq.com',
-      oauthUrl: process.env.GHL_OAUTH_URL || 'https://marketplace.gohighlevel.com/oauth/chooselocation',
-      tokenUrl: process.env.GHL_TOKEN_URL || 'https://services.leadconnectorhq.com/oauth/token',
-      clientId: process.env.GHL_CLIENT_ID,
-      clientSecret: process.env.GHL_CLIENT_SECRET,
-      redirectUri: process.env.GHL_REDIRECT_URI
+      // OAuth configuration removed - using marketplace app installation instead
+      // Authentication will be handled through GoHighLevel marketplace
+      // Username/password stored in GoHighLevel and retrieved via API
     }
   },
   

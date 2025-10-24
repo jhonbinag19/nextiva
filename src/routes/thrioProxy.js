@@ -1,6 +1,6 @@
 const express = require('express');
 const { thrioProxy } = require('../middleware/thrioProxy');
-const { logger } = require('../utils/logger');
+const logger = require('../utils/logger');
 const { authenticate } = require('../middleware/authenticate');
 
 const router = express.Router();

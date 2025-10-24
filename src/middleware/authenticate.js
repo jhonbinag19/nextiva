@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
-const { logger } = require('../utils/logger');
+const logger = require('../utils/logger');
+const config = require('../config/config');
 
 /**
  * Middleware to authenticate requests using JWT

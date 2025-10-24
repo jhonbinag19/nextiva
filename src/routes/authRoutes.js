@@ -1,41 +1,18 @@
 const express = require('express');
+const { validateAuth, verifyToken, refreshToken, healthCheck } = require('../controllers/authController');
+
 const router = express.Router();
-const authController = require('../controllers/authController');
-const { authenticate } = require('../middleware/authenticate');
 
-/**
- * @route GET /api/auth/oauth/initiate
- * @desc Initiate GoHighLevel OAuth flow
- * @access Public
- */
-router.get('/oauth/initiate', authController.initiateOAuth);
+// Authentication validation endpoint for GoHighLevel marketplace
+router.post('/validate', validateAuth);
 
-/**
- * @route GET /api/auth/callback
- * @desc Handle OAuth callback and exchange code for token
- * @access Public
- */
-router.get('/callback', authController.handleOAuthCallback);
+// Token verification endpoint
+router.post('/verify', verifyToken);
 
-/**
- * @route GET /api/auth/verify
- * @desc Verify authentication token
- * @access Private
- */
-router.get('/verify', authenticate, authController.verifyToken);
+// Token refresh endpoint
+router.post('/refresh', refreshToken);
 
-/**
- * @route POST /api/auth/refresh
- * @desc Refresh authentication token
- * @access Public
- */
-router.post('/refresh', authController.refreshToken);
-
-/**
- * @route POST /api/auth/validate
- * @desc Validate external authentication credentials for GoHighLevel marketplace
- * @access Public
- */
-router.post('/validate', authController.validateExternalAuth);
+// Health check endpoint
+router.get('/health', healthCheck);
 
 module.exports = router;

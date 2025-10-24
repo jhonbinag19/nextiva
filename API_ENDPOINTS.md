@@ -32,78 +32,7 @@ GET /api/health
 }
 ```
 
-### Initiate OAuth Flow
-```
-GET /api/auth/oauth/initiate
-```
-- **Description**: Start GoHighLevel OAuth authentication flow
-- **Access**: Public
-- **Response**: Redirects to GoHighLevel OAuth authorization page
-
-### Handle OAuth Callback
-```
-GET /api/auth/callback?code=<authorization_code>&state=<state>
-```
-- **Description**: Handle OAuth callback from GoHighLevel
-- **Access**: Public
-- **Query Parameters**:
-  - `code`: Authorization code from GoHighLevel
-  - `state`: State parameter for security
-- **Response**: `200 OK`
-```json
-{
-  "success": true,
-  "message": "Authentication successful",
-  "token": "<jwt-token>",
-  "user": {
-    "id": "user-id",
-    "email": "user@example.com",
-    "name": "User Name"
-  }
-}
-```
-
-### Verify Token
-```
-GET /api/auth/verify
-```
-- **Description**: Verify the current authentication token
-- **Access**: Private (requires authentication)
-- **Headers**: `Authorization: Bearer <token>`
-- **Response**: `200 OK`
-```json
-{
-  "success": true,
-  "user": {
-    "id": "user-id",
-    "email": "user@example.com",
-    "name": "User Name"
-  }
-}
-```
-
-### Refresh Token
-```
-POST /api/auth/refresh
-```
-- **Description**: Refresh an expired authentication token
-- **Access**: Public
-- **Request Body**:
-```json
-{
-  "refreshToken": "<refresh-token>"
-}
-```
-- **Response**: `200 OK`
-```json
-{
-  "success": true,
-  "token": "<new-jwt-token>",
-  "expiresIn": 3600
-}
-```
-
-### Validate External Authentication (GoHighLevel Marketplace)
+### Validate Authentication (GoHighLevel Marketplace)
 ```
 POST /api/auth/validate
 ```
@@ -153,6 +82,61 @@ POST /api/auth/validate
 - `400 Bad Request`: Missing credentials
 - `401 Unauthorized`: Invalid credentials
 - `500 Internal Server Error`: Server error
+
+### Verify Token
+```
+GET /api/auth/verify
+```
+- **Description**: Verify the current authentication token
+- **Access**: Private (requires authentication)
+- **Headers**: `Authorization: Bearer <token>`
+- **Response**: `200 OK`
+```json
+{
+  "success": true,
+  "user": {
+    "id": "user-id",
+    "username": "thrio-username",
+    "authenticated": true
+  }
+}
+```
+
+### Refresh Token
+```
+POST /api/auth/refresh
+```
+- **Description**: Refresh an expired authentication token
+- **Access**: Public
+- **Request Body**:
+```json
+{
+  "refreshToken": "<refresh-token>"
+}
+```
+- **Response**: `200 OK`
+```json
+{
+  "success": true,
+  "token": "<new-jwt-token>",
+  "expiresIn": 3600
+}
+```
+
+### Authentication Health Check
+```
+GET /api/auth/health
+```
+- **Description**: Check authentication service health
+- **Access**: Public
+- **Response**: `200 OK`
+```json
+{
+  "status": "ok",
+  "service": "authentication",
+  "timestamp": "2025-01-01T12:00:00.000Z"
+}
+```
 
 ---
 

@@ -1,867 +1,290 @@
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
-const { logger } = require('../utils/logger');
+const logger = require('../utils/logger');
 const config = require('../config/config');
 const { goHighLevelService } = require('../services/goHighLevelService');
 const { nextivaCrmService } = require('../services/nextivaCrmService');
+const { storeThrioCredentials, getThrioCredentials, validateAppInstallation } = require('../services/goHighLevelService');
 
 /**
- * Initiate GoHighLevel OAuth flow
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
+ * Install app for GoHighLevel location - stores Thrio credentials
+ * This endpoint is called during the GoHighLevel marketplace app installation
  */
-const initiateOAuth = (req, res) => {
+const installApp = async (req, res) => {
   try {
-    const { clientId, oauthUrl, redirectUri } = config.api.ghl;
-    
-    if (!clientId || !redirectUri) {
-      return res.status(500).json({
+    const { locationId, username, password, apiKey } = req.body;
+
+    // Validate required fields
+    if (!locationId || !username || !password || !apiKey) {
+      return res.status(400).json({
         success: false,
-        message: 'OAuth configuration missing. Please check GHL_CLIENT_ID and GHL_REDIRECT_URI environment variables.'
+        message: 'Missing required fields: locationId, username, password, apiKey'
       });
     }
+
+    // First, validate the Thrio credentials
+    const thrioValidation = await nextivaCrmService.validateCredentials(username, password);
     
-    // Required scopes for marketplace app
-    const scopes = [
-      'contacts.readonly',
-      'contacts.write',
-      'locations.readonly',
-      'users.readonly'
-    ].join(' ');
+    if (!thrioValidation.success) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid Thrio credentials',
+        error: thrioValidation.message
+      });
+    }
+
+    // Store the credentials in GoHighLevel
+    const storageResult = await storeThrioCredentials(locationId, username, password, apiKey);
     
-    const authUrl = `${oauthUrl}?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}`;
-    
-    res.status(200).json({
+    if (!storageResult.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to store credentials',
+        error: storageResult.message
+      });
+    }
+
+    logger.info('App installed successfully', { locationId, username });
+
+    res.json({
       success: true,
-      authUrl,
-      message: 'Redirect user to this URL to complete OAuth flow'
+      message: 'App installed successfully',
+      data: {
+        locationId,
+        username,
+        installedAt: new Date().toISOString()
+      }
     });
+
   } catch (error) {
-    logger.error('Error in initiateOAuth:', error);
+    logger.error('App installation failed', { error: error.message });
     res.status(500).json({
       success: false,
-      message: 'Failed to initiate OAuth flow'
+      message: 'App installation failed',
+      error: error.message
     });
   }
 };
 
 /**
- * Handle OAuth callback and exchange code for token
+ * Validate external authentication (for GoHighLevel marketplace)
+ * This endpoint validates credentials and returns a JWT token
+ * Supports both direct credentials and GoHighLevel credential fetching
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
- * @param {Function} next - Express next middleware function
  */
-const handleOAuthCallback = async (req, res, next) => {
+const validateAuth = async (req, res) => {
   try {
-    const { code } = req.query;
-    
-    if (!code) {
-      return res.status(400).json({
-        success: false,
-        message: 'Authorization code is required'
-      });
-    }
-    
-    const { clientId, clientSecret, tokenUrl, redirectUri } = config.api.ghl;
-    
-    if (!clientId || !clientSecret) {
-      return res.status(500).json({
-        success: false,
-        message: 'OAuth configuration missing'
-      });
-    }
-    
-    // Exchange authorization code for access token
-    const tokenResponse = await axios.post(
-      tokenUrl,
-      {
-        grant_type: 'authorization_code',
-        client_id: clientId,
-        client_secret: clientSecret,
-        code: code,
-        redirect_uri: redirectUri
-      },
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
-    );
-    
-    const { access_token, refresh_token, expires_in, scope } = tokenResponse.data;
-    
-    if (!access_token) {
-      return res.status(401).json({
-        success: false,
-        message: 'Failed to obtain access token'
-      });
-    }
-    
-    // Validate the token by making a test API call
-    const validationResult = await goHighLevelService.validateApiKey(access_token);
-    
-    if (!validationResult.success) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid access token received'
-      });
-    }
-    
-    // Generate JWT token for our API
-    const jwtToken = jwt.sign(
-      {
-        ghlAccessToken: access_token,
-        ghlRefreshToken: refresh_token,
-        locationId: validationResult.locationId,
-        scope: scope,
-        tokenExpiry: Date.now() + (expires_in * 1000)
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-    
-    // Generate refresh token for our API
-    const apiRefreshToken = jwt.sign(
-      {
-        ghlRefreshToken: refresh_token,
-        locationId: validationResult.locationId
-      },
-      process.env.JWT_REFRESH_SECRET,
-      { expiresIn: '7d' }
-    );
-    
-    res.status(200).json({
-      success: true,
-      token: jwtToken,
-      refreshToken: apiRefreshToken,
-      expiresIn: 86400, // 24 hours in seconds
-      tokenType: 'Bearer',
-      location: {
-        id: validationResult.locationId,
-        name: validationResult.locationName
-      },
-      scope: scope
-    });
-  } catch (error) {
-    logger.error('Error in handleOAuthCallback:', error);
-    
-    if (error.response && error.response.status === 401) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid authorization code'
-      });
-    }
-    
-    next(error);
-  }
-};
+    const { username, password, locationId, apiKey } = req.body;
 
-/**
- * Verify authentication token
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-const verifyToken = (req, res) => {
-  // If request reaches here, token is valid (verified by authenticate middleware)
-  res.status(200).json({
-    success: true,
-    message: 'Token is valid',
-    user: req.user
-  });
-};
+    let credentials = { username, password };
 
-/**
- * Refresh authentication token
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- * @param {Function} next - Express next middleware function
- */
-const refreshToken = async (req, res, next) => {
-  try {
-    const { refreshToken } = req.body;
-    
-    if (!refreshToken) {
-      return res.status(400).json({ success: false, message: 'Refresh token is required' });
-    }
-    
-    // Verify refresh token
-    jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET, async (err, decoded) => {
-      if (err) {
-        return res.status(401).json({ success: false, message: 'Invalid refresh token' });
-      }
+    // If locationId and apiKey are provided, try to get stored credentials
+    if (locationId && apiKey && !username && !password) {
+      const storedCredentials = await getThrioCredentials(locationId, apiKey);
       
-      const { username, userId } = decoded;
-      
-      // Generate new JWT token
-      const newToken = jwt.sign(
-        { 
-          username,
-          userId
-        },
-        process.env.JWT_SECRET,
-        { expiresIn: '24h' }
-      );
-      
-      res.status(200).json({
-        success: true,
-        token: newToken,
-        expiresIn: 86400, // 24 hours in seconds
-        tokenType: 'Bearer'
-      });
-    });
-  } catch (error) {
-    logger.error('Error in refreshToken:', error);
-    next(error);
-  }
-};
-
-/**
- * Validate external authentication credentials for GoHighLevel marketplace
- * This endpoint is called by GoHighLevel to validate user credentials during app installation
- * It fetches credentials from GoHighLevel and authenticates against Thrio API to verify the credentials
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-const validateExternalAuth = async (req, res) => {
-  try {
-    const { username, password, apiKey, locationId } = req.body;
-    
-    // Log the validation attempt (without sensitive data)
-    if (logger && logger.info) {
-      logger.info('External authentication validation attempt', {
-        username: username ? username.substring(0, 3) + '***' : undefined,
-        hasPassword: !!password,
-        hasApiKey: !!apiKey,
-        hasLocationId: !!locationId
-      });
-    } else {
-      console.log('External authentication validation attempt:', {
-        username: username ? username.substring(0, 3) + '***' : undefined,
-        hasPassword: !!password,
-        hasApiKey: !!apiKey,
-        hasLocationId: !!locationId
-      });
-    }
-    
-    // Validate required credentials
-    if (!username || !password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Username and password are required',
-        error: 'MISSING_CREDENTIALS'
-      });
-    }
-    
-    // If apiKey and locationId are provided, fetch credentials from GoHighLevel
-    let credentialsToUse = { username, password };
-    
-    if (apiKey && locationId) {
-      try {
-        // Fetch stored credentials from GoHighLevel
-        const storedCredentials = await fetchCredentialsFromGoHighLevel(apiKey, locationId);
-        if (storedCredentials && storedCredentials.success) {
-          credentialsToUse = {
-            username: storedCredentials.username,
-            password: storedCredentials.password
-          };
-          if (logger && logger.info) {
-            logger.info('Successfully fetched credentials from GoHighLevel for location:', locationId);
-          }
-        } else {
-          if (logger && logger.warn) {
-            logger.warn('Failed to fetch credentials from GoHighLevel, using provided credentials');
-          }
-        }
-      } catch (fetchError) {
-        if (logger && logger.error) {
-          logger.error('Error fetching credentials from GoHighLevel:', fetchError.message);
-        }
-        // Continue with provided credentials if fetch fails
-      }
-    }
-    
-    // Smart authentication: Try real API first, fallback to demo mode
-    let thrioAuthResult = null;
-    let authMode = 'unknown';
-    let fallbackReason = null;
-    
-    // Check if credentials are hardcoded demo credentials first
-    const isDemoCredentials = 
-      (username === 'nextiva+wisechoiceremodeling@wisechoiceremodel.com' && 
-       password === 'GHLwiseChoiceAPI2025!!') ||
-      ((username === 'demo@thrio.com' || username === 'test@thrio.com') && 
-       password === 'demo123');
-    
-    if (isDemoCredentials) {
-      // For known demo credentials, skip real API call and go straight to demo mode
-      authMode = 'demo_hardcoded';
-      if (logger && logger.info) {
-        logger.info('Using hardcoded demo credentials, skipping real API call');
-      }
-    } else if (process.env.NODE_ENV === 'development') {
-      // In development mode, try real API first for unknown credentials
-      if (logger && logger.info) {
-        logger.info('Development mode: Attempting real Thrio authentication first');
-      }
-      
-      try {
-        thrioAuthResult = await authenticateWithThrioRealAPI(credentialsToUse.username, credentialsToUse.password);
-        if (thrioAuthResult && thrioAuthResult.success) {
-          authMode = 'real_api';
-          if (logger && logger.info) {
-            logger.info('Real Thrio authentication successful');
-          }
-        } else {
-          fallbackReason = thrioAuthResult?.message || 'Real API authentication failed';
-          authMode = 'demo_fallback';
-          if (logger && logger.info) {
-            logger.info('Real API failed, falling back to demo mode:', fallbackReason);
-          }
-        }
-      } catch (realApiError) {
-        fallbackReason = realApiError.message || 'Real API error';
-        authMode = 'demo_fallback';
-        if (logger && logger.info) {
-          logger.info('Real API threw error, falling back to demo mode:', fallbackReason);
-        }
-      }
-    } else {
-      // In production, check for demo credentials first, then use real API
-      if (isDemoCredentials) {
-        // Even in production, hardcoded demo credentials should work
-        authMode = 'demo_hardcoded';
-        if (logger && logger.info) {
-          logger.info('Production mode: Using hardcoded demo credentials');
-        }
-      } else {
-        // Real credentials in production
-        authMode = 'real_api_only';
-        thrioAuthResult = await authenticateWithThrioRealAPI(credentialsToUse.username, credentialsToUse.password);
-      }
-    }
-    
-    // If we don't have a result from real API (or we're in demo mode), generate demo token
-    if (!thrioAuthResult || !thrioAuthResult.success) {
-      if (authMode === 'demo_hardcoded' || authMode === 'demo_fallback' || 
-          (process.env.NODE_ENV === 'development' && authMode === 'unknown')) {
-        // Generate demo token
-        thrioAuthResult = {
-          success: true,
-          accessToken: 'demo-access-token-' + Date.now() + '-' + credentialsToUse.username.replace(/[^a-zA-Z0-9]/g, ''),
-          refreshToken: 'demo-refresh-token-' + Date.now() + '-' + credentialsToUse.username.replace(/[^a-zA-Z0-9]/g, ''),
-          tokenType: 'Bearer',
-          expiresIn: 3600,
-          authorities: ['ROLE_USER', 'ROLE_ADMIN'],
-          scope: 'read write',
-          demo: true,
-          source: authMode === 'demo_hardcoded' ? 'hardcoded_demo' : 'fallback_demo',
-          fallbackReason: fallbackReason
-        };
-        
-        if (logger && logger.info) {
-          logger.info('Generated demo token in mode:', authMode);
-        }
-      } else {
-        // Real authentication failed and we're not in demo mode
-        const errorMessage = thrioAuthResult?.message || 'Authentication failed';
-        if (logger && logger.error) {
-          logger.error('Authentication failed:', errorMessage);
-        }
-        return res.status(401).json({
+      if (!storedCredentials.success) {
+        return res.status(404).json({
           success: false,
-          message: 'Invalid credentials for Thrio API',
-          error: 'INVALID_THRIO_CREDENTIALS',
-          details: errorMessage,
-          authMode: authMode
+          message: 'No stored credentials found for this location. Please install the app first.',
+          requiresInstallation: true
         });
       }
+      
+      credentials = storedCredentials.credentials;
     }
-    
-    // If we reach here, we have valid authentication (real or demo)
-    // Store the credentials and tokens for future use
-    // In production, you should encrypt and store these securely
-    process.env.THRIO_USERNAME = credentialsToUse.username;
-    process.env.THRIO_PASSWORD = credentialsToUse.password;
-    process.env.THRIO_ACCESS_TOKEN = thrioAuthResult?.accessToken;
-    if (thrioAuthResult?.refreshToken) {
-      process.env.THRIO_REFRESH_TOKEN = thrioAuthResult.refreshToken;
+
+    // Validate required fields for direct authentication
+    if (!credentials.username || !credentials.password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username and password are required'
+      });
     }
-    
-    if (logger && logger.info) {
-      logger.info('Authentication successful for user:', credentialsToUse.username || 'unknown', 'Mode:', authMode);
-    } else {
-      console.log('Authentication successful for user:', credentialsToUse.username || 'unknown', 'Mode:', authMode);
-    }
-    
-    // Return success response with clear indication of authentication mode
-    // Generate JWT token for our API
-    const jwtToken = jwt.sign(
-      {
-        ghlAccessToken: thrioAuthResult.accessToken,
-        ghlRefreshToken: thrioAuthResult.refreshToken,
-        locationId: locationId || 'demo-location-id',
-        scope: thrioAuthResult.scope,
-        tokenExpiry: Date.now() + (thrioAuthResult.expiresIn * 1000)
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '24h' }
+
+    // Validate credentials against Thrio
+    const thrioValidation = await nextivaCrmService.validateCredentials(
+      credentials.username,
+      credentials.password
     );
+
+    if (!thrioValidation.success) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials',
+        details: thrioValidation.message
+      });
+    }
+
+    // Generate JWT token
+    const tokenPayload = {
+      username: credentials.username,
+      locationId: locationId || null,
+      type: locationId ? 'ghl_marketplace' : 'direct',
+      validated_at: new Date().toISOString()
+    };
+
+    const token = jwt.sign(tokenPayload, config.jwt.secret, {
+      expiresIn: config.jwt.expiresIn
+    });
+
+    const refreshToken = jwt.sign(
+      { username: credentials.username },
+      config.jwt.refreshSecret,
+      { expiresIn: config.jwt.refreshExpiresIn }
+    );
+
+    logger.info('Authentication successful', { 
+      username: credentials.username,
+      locationId: locationId || 'direct'
+    });
 
     res.status(200).json({
       success: true,
       message: 'Authentication successful',
-      token: jwtToken, // JWT token for API authentication
-      expiresIn: 86400, // 24 hours in seconds
-      tokenType: 'Bearer',
-      authMode: authMode, // NEW: Clearly indicate which authentication mode was used
-      isDemo: !!thrioAuthResult.demo, // NEW: Explicitly mark if this is a demo token
-      user: {
-        username: credentialsToUse.username,
-        authenticated: true,
-        timestamp: new Date().toISOString(),
-        thrioAuthenticated: true,
-        thrioToken: thrioAuthResult?.accessToken,
-        tokenType: thrioAuthResult?.tokenType,
-        expiresIn: thrioAuthResult?.expiresIn,
-        authorities: thrioAuthResult?.authorities,
-        scope: thrioAuthResult?.scope
-      },
-      // NEW: Additional metadata for debugging and clarity
-      metadata: {
-        authenticationMode: authMode,
-        isDemoToken: !!thrioAuthResult.demo,
-        fallbackReason: fallbackReason,
-        tokenSource: thrioAuthResult.source || 'unknown',
-        environment: process.env.NODE_ENV || 'unknown'
+      data: {
+        access_token: token,
+        refresh_token: refreshToken,
+        expires_in: config.jwt.expiresIn,
+        token_type: 'Bearer',
+        user: {
+          username: credentials.username,
+          locationId: locationId || null,
+          type: locationId ? 'ghl_marketplace' : 'direct'
+        }
       }
     });
-    
+
   } catch (error) {
-    console.error('DEBUG: Error caught in validateExternalAuth:', error);
-    console.error('DEBUG: Error type:', typeof error);
-    console.error('DEBUG: Error keys:', error ? Object.keys(error) : 'undefined');
-    
-    // Safely log the error without triggering further issues
-    try {
-      if (error && typeof error === 'object') {
-        // Create a safe object for logging
-        const safeError = {
-          message: error.message ? String(error.message) : 'Unknown error',
-          stack: error.stack ? String(error.stack) : 'No stack'
-        };
-        if (logger && logger.error) {
-          logger.error('Error in validateExternalAuth:', safeError);
-        } else {
-          console.error('Error in validateExternalAuth:', safeError);
-        }
-      } else {
-        if (logger && logger.error) {
-          logger.error('Error in validateExternalAuth:', error || 'Unknown error');
-        } else {
-          console.error('Error in validateExternalAuth:', error || 'Unknown error');
-        }
-      }
-    } catch (logError) {
-      console.error('Failed to log error:', logError);
-      // Fallback to simple console logging
-      console.error('Error in validateExternalAuth (fallback):', error || 'Unknown error');
-    }
-    
+    logger.error('Error in validateAuth:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error during authentication',
-      error: 'SERVER_ERROR'
+      message: 'Authentication failed',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 };
 
 /**
- * Fetch stored credentials from GoHighLevel for a specific location
- * This function retrieves Thrio credentials stored in GoHighLevel custom fields
- * @param {string} apiKey - GoHighLevel API key
- * @param {string} locationId - GoHighLevel location ID
- * @returns {Object} Credentials object with username and password
+ * Verify JWT token
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
  */
-const fetchCredentialsFromGoHighLevel = async (apiKey, locationId) => {
+const verifyToken = async (req, res) => {
   try {
-    if (logger && logger.info) {
-      logger.info('Fetching credentials from GoHighLevel for location:', locationId);
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authorization header missing or invalid'
+      });
     }
-    
-    // Create GoHighLevel API client
-    const ghlClient = axios.create({
-      baseURL: process.env.GHL_API_BASE_URL || 'https://rest.gohighlevel.com/v1',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 10000
-    });
-    
-    // Fetch location details to get custom fields
-    const locationResponse = await ghlClient.get(`/locations/${locationId}`);
-    
-    if (!locationResponse.data || !locationResponse.data.success) {
-      throw new Error('Failed to fetch location details from GoHighLevel');
-    }
-    
-    const location = locationResponse.data.location;
-    const customFields = location.customFields || {};
-    
-    // Look for Thrio credentials in custom fields
-    // Common field names that might be used to store Thrio credentials
-    const possibleFieldNames = [
-      'thrio_username', 'thrioUsername', 'thrio_user', 'thrioUser',
-      'thrio_password', 'thrioPassword', 'thrio_pass', 'thrioPass',
-      'nextiva_username', 'nextivaUsername', 'nextiva_user', 'nextivaUser',
-      'nextiva_password', 'nextivaPassword', 'nextiva_pass', 'nextivaPass'
-    ];
-    
-    let foundUsername = null;
-    let foundPassword = null;
-    
-    // Search through custom fields for credentials
-    for (const [fieldName, fieldValue] of Object.entries(customFields)) {
-      const lowerFieldName = fieldName.toLowerCase();
-      if (possibleFieldNames.some(name => name.toLowerCase() === lowerFieldName && lowerFieldName.includes('user'))) {
-        foundUsername = fieldValue;
-      }
-      if (possibleFieldNames.some(name => name.toLowerCase() === lowerFieldName && lowerFieldName.includes('pass'))) {
-        foundPassword = fieldValue;
-      }
-    }
-    
-    // If credentials found in custom fields, return them
-    if (foundUsername && foundPassword) {
-      if (logger && logger.info) {
-        logger.info('Successfully found Thrio credentials in GoHighLevel custom fields');
-      }
-      return {
+
+    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+
+    try {
+      const decoded = jwt.verify(token, config.jwt.secret);
+      
+      res.status(200).json({
         success: true,
-        username: foundUsername,
-        password: foundPassword,
-        source: 'custom_fields'
-      };
-    }
-    
-    // If no credentials found in custom fields, try to fetch from contact notes or tags
-    // This is a fallback mechanism - you might want to store credentials in a specific contact
-    const contactsResponse = await ghlClient.get('/contacts', {
-      params: {
-        locationId: locationId,
-        limit: 100
-      }
-    });
-    
-    if (contactsResponse.data && contactsResponse.data.contacts) {
-      // Look for contacts with Thrio-related tags or notes
-      for (const contact of contactsResponse.data.contacts) {
-        const tags = contact.tags || [];
-        const notes = contact.notes || '';
-        
-        // Check if contact has Thrio-related tags
-        if (tags.some(tag => tag.toLowerCase().includes('thrio') || tag.toLowerCase().includes('nextiva'))) {
-          // Try to extract credentials from notes or custom fields
-          const contactCustomFields = contact.customFields || {};
-          
-          for (const [fieldName, fieldValue] of Object.entries(contactCustomFields)) {
-            const lowerFieldName = fieldName.toLowerCase();
-            if (possibleFieldNames.some(name => name.toLowerCase() === lowerFieldName && lowerFieldName.includes('user'))) {
-              foundUsername = fieldValue;
-            }
-            if (possibleFieldNames.some(name => name.toLowerCase() === lowerFieldName && lowerFieldName.includes('pass'))) {
-              foundPassword = fieldValue;
-            }
-          }
-          
-          if (foundUsername && foundPassword) {
-            if (logger && logger.info) {
-              logger.info('Successfully found Thrio credentials in GoHighLevel contact');
-            }
-            return {
-              success: true,
-              username: foundUsername,
-              password: foundPassword,
-              source: 'contact'
-            };
-          }
+        message: 'Token is valid',
+        data: {
+          username: decoded.username,
+          ghl_location_id: decoded.ghl_location_id,
+          validated_at: decoded.validated_at,
+          expires_at: new Date(decoded.exp * 1000).toISOString()
         }
-      }
+      });
+    } catch (jwtError) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired token'
+      });
     }
-    
-    // If still no credentials found, return failure
-    if (logger && logger.warn) {
-      logger.warn('No Thrio credentials found in GoHighLevel for location:', locationId);
-    }
-    
-    return {
-      success: false,
-      message: 'No Thrio credentials found in GoHighLevel',
-      error: 'CREDENTIALS_NOT_FOUND'
-    };
-    
+
   } catch (error) {
-    if (logger && logger.error) {
-      logger.error('Error fetching credentials from GoHighLevel:', error.message);
-    }
-    
-    return {
+    logger.error('Error in verifyToken:', error);
+    res.status(500).json({
       success: false,
-      message: 'Failed to fetch credentials from GoHighLevel',
-      error: error.message || 'FETCH_ERROR'
-    };
+      message: 'Token verification failed'
+    });
   }
 };
 
 /**
- * Authenticate against Thrio API using username and password
- * This function calls the Thrio token-with-authorities endpoint to get access and refresh tokens
- * @param {string} username - Thrio username
- * @param {string} password - Thrio password
- * @returns {Object} Authentication result with success status and tokens
+ * Refresh JWT token
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
  */
-/**
- * Authenticate with Thrio API - Real API call (no demo logic)
- * This function only attempts real authentication against the Thrio API
- * @param {string} username - Thrio username
- * @param {string} password - Thrio password
- * @returns {Object} Authentication result with success status and tokens
- */
-const authenticateWithThrioRealAPI = async (username, password) => {
+const refreshToken = async (req, res) => {
   try {
-    const { baseUrl, tokenEndpoint } = config.api.thrio;
-    const tokenUrl = `${baseUrl}${tokenEndpoint}`;
-    
-    if (logger && logger.info) {
-      logger.info('Attempting REAL Thrio authentication for user:', username || 'unknown');
-    } else {
-      console.log('Attempting REAL Thrio authentication for user:', username || 'unknown');
+    const { refresh_token } = req.body;
+
+    if (!refresh_token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Refresh token is required'
+      });
     }
-    
-    // Make request to Thrio token-with-authorities endpoint
-    // Convert data to URL encoded format for form submission
-    const formData = new URLSearchParams();
-    formData.append('username', username);
-    formData.append('password', password);
-    formData.append('grant_type', 'password');
-    formData.append('client_id', 'thrio-client');
-    
-    const response = await axios.post(
-      tokenUrl,
-      formData.toString(),
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json'
-        },
-        timeout: config.api.thrio.timeout
-      }
-    );
-    
-    if (response.data && response.data.access_token) {
-      if (logger && logger.info) {
-        logger.info('REAL Thrio authentication successful for user:', username || 'unknown');
-      } else {
-        console.log('REAL Thrio authentication successful for user:', username || 'unknown');
-      }
-      return {
+
+    try {
+      const decoded = jwt.verify(refresh_token, config.jwt.refreshSecret);
+      
+      // Generate new access token
+      const newTokenPayload = {
+        username: decoded.username,
+        ghl_location_id: decoded.ghl_location_id || null,
+        validated_at: new Date().toISOString()
+      };
+
+      const newToken = jwt.sign(newTokenPayload, config.jwt.secret, {
+        expiresIn: config.jwt.expiresIn
+      });
+
+      res.status(200).json({
         success: true,
-        accessToken: response.data.access_token,
-        refreshToken: response.data.refresh_token,
-        expiresIn: response.data.expires_in,
-        tokenType: response.data.token_type || 'Bearer',
-        authorities: response.data.authorities || [],
-        scope: response.data.scope,
-        demo: false,
-        source: 'real_thrio_api'
-      };
-    } else {
-      if (logger && logger.error) {
-        logger.error('REAL Thrio authentication failed: No access token in response');
-      } else {
-        console.error('REAL Thrio authentication failed: No access token in response');
-      }
-      return {
-        success: false,
-        message: 'Invalid response from Thrio authentication',
-        error: 'NO_ACCESS_TOKEN',
-        demo: false,
-        source: 'real_thrio_api'
-      };
-    }
-    
-  } catch (error) {
-    // Safely handle the error object
-    const errorMessage = error && typeof error === 'object' && error.message ? error.message : 'Unknown authentication error';
-    if (logger && logger.error) {
-      logger.error('REAL Thrio authentication error:', errorMessage);
-    } else {
-      console.error('REAL Thrio authentication error:', errorMessage);
-    }
-    
-    if (error && typeof error === 'object' && error.response) {
-      // The request was made and the server responded with a status code
-      // that falls out of the range of 2xx
-      if (logger && logger.error) {
-        logger.error('REAL Thrio authentication error response:', {
-          status: error.response.status,
-          data: error.response.data,
-          headers: error.response.headers
-        });
-      } else {
-        console.error('REAL Thrio authentication error response:', {
-          status: error.response.status,
-          data: error.response.data,
-          headers: error.response.headers
-        });
-      }
-      
-      return {
-        success: false,
-        statusCode: error.response.status,
-        message: error.response.data && (error.response.data.message || error.response.data.error) || 'Thrio authentication failed',
-        error: error.response.data && error.response.data.error || 'AUTHENTICATION_FAILED',
-        demo: false,
-        source: 'real_thrio_api'
-      };
-    } else if (error && typeof error === 'object' && error.request) {
-      // The request was made but no response was received
-      if (logger && logger.error) {
-        logger.error('REAL Thrio authentication no response:', { request: error.request });
-      } else {
-        console.error('REAL Thrio authentication no response:', { request: error.request });
-      }
-      
-      return {
-        success: false,
-        statusCode: 503,
-        message: 'No response from Thrio authentication service',
-        error: 'SERVICE_UNAVAILABLE',
-        demo: false,
-        source: 'real_thrio_api'
-      };
-    } else {
-      // Something happened in setting up the request that triggered an Error
-      const setupErrorMessage = error && typeof error === 'object' && error.message ? error.message : 'Unknown request error';
-      if (logger && logger.error) {
-        logger.error('REAL Thrio authentication request error:', { message: setupErrorMessage });
-      } else {
-        console.error('REAL Thrio authentication request error:', { message: setupErrorMessage });
-      }
-      
-      return {
-        success: false,
-        statusCode: 500,
-        message: 'Error setting up request to Thrio authentication',
-        error: 'REQUEST_SETUP_ERROR',
-        demo: false,
-        source: 'real_thrio_api'
-      };
-    }
-  }
-};
-
-/**
- * Authenticate with Thrio API - Main function with demo fallback logic
- * This function handles both real and demo authentication
- * @param {string} username - Thrio username
- * @param {string} password - Thrio password
- * @returns {Object} Authentication result with success status and tokens
- */
-const authenticateWithThrio = async (username, password) => {
-  try {
-    // Enhanced demo mode for development/testing
-    // This mode works with any credentials when in development
-    if (process.env.NODE_ENV === 'development') {
-      // Demo mode for specific test credentials
-      if ((username === 'nextiva+wisechoiceremodeling@wisechoiceremodel.com' && 
-           password === 'GHLwiseChoiceAPI2025!!') ||
-          (username === 'demo@thrio.com' || username === 'test@thrio.com') && 
-           password === 'demo123') {
-        if (logger && logger.info) {
-          logger.info('Using demo mode for Thrio authentication');
-        } else {
-          console.log('Using demo mode for Thrio authentication');
+        message: 'Token refreshed successfully',
+        data: {
+          access_token: newToken,
+          expires_in: config.jwt.expiresIn,
+          token_type: 'Bearer'
         }
-        
-        return {
-          success: true,
-          accessToken: 'demo-access-token-' + Date.now(),
-          refreshToken: 'demo-refresh-token-' + Date.now(),
-          tokenType: 'Bearer',
-          expiresIn: 3600,
-          authorities: ['ROLE_USER', 'ROLE_ADMIN'],
-          scope: 'read write',
-          demo: true,
-          source: 'demo_mode'
-        };
-      }
-      
-      // Fallback demo mode for any credentials in development
-      // This allows testing with dynamic credentials fetched from GoHighLevel
-      if (logger && logger.info) {
-        logger.info('Using fallback demo mode for Thrio authentication with username:', username);
-      }
-      
-      return {
-        success: true,
-        accessToken: 'demo-access-token-' + Date.now() + '-' + username.replace(/[^a-zA-Z0-9]/g, ''),
-        refreshToken: 'demo-refresh-token-' + Date.now() + '-' + username.replace(/[^a-zA-Z0-9]/g, ''),
-        tokenType: 'Bearer',
-        expiresIn: 3600,
-        authorities: ['ROLE_USER', 'ROLE_ADMIN'],
-        scope: 'read write',
-        demo: true,
-        source: 'fallback_demo_mode'
-      };
+      });
+
+    } catch (jwtError) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired refresh token'
+      });
     }
-    
-    // If not in development demo mode, try real API
-    return await authenticateWithThrioRealAPI(username, password);
-    
+
   } catch (error) {
-    // This should not be reached since authenticateWithThrioRealAPI handles its own errors
-    // But keep as safety net
-    const errorMessage = error && typeof error === 'object' && error.message ? error.message : 'Unknown authentication error';
-    if (logger && logger.error) {
-      logger.error('authenticateWithThrio wrapper error:', errorMessage);
-    } else {
-      console.error('authenticateWithThrio wrapper error:', errorMessage);
-    }
-    
-    return {
+    logger.error('Error in refreshToken:', error);
+    res.status(500).json({
       success: false,
-      statusCode: 500,
-      message: errorMessage,
-      error: 'WRAPPER_ERROR',
-      demo: false,
-      source: 'wrapper_error'
-    };
+      message: 'Token refresh failed'
+    });
   }
 };
 
 /**
- * Helper function to validate user credentials
- * Replace this with your actual user validation logic
- * @param {string} username - User's username
- * @param {string} password - User's password
- * @returns {boolean} - Whether credentials are valid
+ * Health check endpoint
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
  */
-const validateUserCredentials = async (username, password) => {
-  // TODO: Implement actual user validation logic
-  // This is a placeholder implementation
-  
-  // Example: Check against environment variables for demo purposes
-  const validUsername = process.env.DEMO_USERNAME || 'admin';
-  const validPassword = process.env.DEMO_PASSWORD || 'password123';
-  
-  return username === validUsername && password === validPassword;
+const healthCheck = (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Authentication service is healthy',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0'
+  });
 };
 
 module.exports = {
-  initiateOAuth,
-  handleOAuthCallback,
+  validateAuth,
   verifyToken,
   refreshToken,
-  validateExternalAuth
+  healthCheck
 };

@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { logger } = require('../utils/logger');
+const logger = require('../utils/logger');
 
 // Base URL for GoHighLevel API
 const GHL_API_BASE_URL = process.env.GHL_API_BASE_URL || 'https://services.leadconnectorhq.com';
@@ -67,21 +67,148 @@ const handleApiError = (error) => {
 };
 
 /**
- * Map Nextiva lead data to GoHighLevel contact format
- * @param {Object} leadData - Nextiva lead data
- * @returns {Object} GoHighLevel contact data
+ * Store Thrio credentials for a GoHighLevel location during app installation
+ * @param {string} locationId - GoHighLevel location ID
+ * @param {string} username - Thrio username/email
+ * @param {string} password - Thrio password
+ * @param {string} apiKey - GoHighLevel API key
+ * @returns {Promise<Object>} Storage result
  */
-const mapLeadToContact = (leadData) => {
-  return {
-    firstName: leadData.firstName,
-    lastName: leadData.lastName,
-    email: leadData.email,
-    phone: leadData.phone,
-    source: leadData.source,
-    tags: leadData.tags || [],
-    customFields: leadData.customFields || {},
-    // Add any additional mapping as needed
-  };
+const storeThrioCredentials = async (locationId, username, password, apiKey) => {
+  try {
+    const apiClient = createApiClient(apiKey);
+    
+    // Store credentials in GoHighLevel custom fields or app data
+    // This could be stored in location custom fields or app-specific storage
+    const credentialData = {
+      thrio_username: username,
+      thrio_password: password, // In production, this should be encrypted
+      stored_at: new Date().toISOString(),
+      app_name: 'nextiva-thrio-integration'
+    };
+
+    // Store in location custom fields
+    const response = await apiClient.put(`/locations/${locationId}/customFields`, {
+      customFields: {
+        'nextiva_thrio_username': username,
+        'nextiva_thrio_password': password, // Encrypt in production
+        'nextiva_integration_active': 'true',
+        'nextiva_installed_at': new Date().toISOString()
+      }
+    });
+
+    logger.info('Thrio credentials stored successfully', { 
+      locationId, 
+      username,
+      status: response.status 
+    });
+
+    return {
+      success: true,
+      message: 'Credentials stored successfully',
+      locationId,
+      username
+    };
+
+  } catch (error) {
+    logger.error('Failed to store Thrio credentials', { 
+      locationId, 
+      username, 
+      error: error.message 
+    });
+    
+    return handleApiError(error);
+  }
+};
+
+/**
+ * Retrieve stored Thrio credentials for a GoHighLevel location
+ * @param {string} locationId - GoHighLevel location ID
+ * @param {string} apiKey - GoHighLevel API key
+ * @returns {Promise<Object>} Retrieved credentials
+ */
+const getThrioCredentials = async (locationId, apiKey) => {
+  try {
+    const apiClient = createApiClient(apiKey);
+    
+    // Retrieve credentials from GoHighLevel location data
+    const response = await apiClient.get(`/locations/${locationId}`);
+    
+    const locationData = response.data;
+    const customFields = locationData.customFields || {};
+    
+    const thrioUsername = customFields['nextiva_thrio_username'];
+    const thrioPassword = customFields['nextiva_thrio_password']; // Decrypt in production
+    
+    if (!thrioUsername || !thrioPassword) {
+      return {
+        success: false,
+        message: 'Thrio credentials not found for this location',
+        locationId
+      };
+    }
+
+    logger.info('Thrio credentials retrieved successfully', { 
+      locationId, 
+      username: thrioUsername 
+    });
+
+    return {
+      success: true,
+      credentials: {
+        username: thrioUsername,
+        password: thrioPassword,
+        locationId
+      }
+    };
+
+  } catch (error) {
+    logger.error('Failed to retrieve Thrio credentials', { 
+      locationId, 
+      error: error.message 
+    });
+    
+    return handleApiError(error);
+  }
+};
+
+/**
+ * Validate that the app is properly installed for a location
+ * @param {string} locationId - GoHighLevel location ID
+ * @param {string} apiKey - GoHighLevel API key
+ * @returns {Promise<Object>} Installation status
+ */
+const validateAppInstallation = async (locationId, apiKey) => {
+  try {
+    const credentialsResult = await getThrioCredentials(locationId, apiKey);
+    
+    if (!credentialsResult.success) {
+      return {
+        success: false,
+        installed: false,
+        message: 'App not properly installed - missing Thrio credentials'
+      };
+    }
+
+    return {
+      success: true,
+      installed: true,
+      message: 'App is properly installed',
+      credentials: credentialsResult.credentials
+    };
+
+  } catch (error) {
+    logger.error('Failed to validate app installation', { 
+      locationId, 
+      error: error.message 
+    });
+    
+    return {
+      success: false,
+      installed: false,
+      message: 'Failed to validate installation'
+    };
+  }
 };
 
 /**
@@ -1338,5 +1465,8 @@ const goHighLevelService = {
 };
 
 module.exports = {
-  goHighLevelService
+  goHighLevelService,
+  storeThrioCredentials,
+  getThrioCredentials,
+  validateAppInstallation
 };
