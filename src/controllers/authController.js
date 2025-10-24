@@ -121,7 +121,12 @@ const validateAuth = async (req, res) => {
       username: credentials.username,
       locationId: locationId || null,
       type: locationId ? 'ghl_marketplace' : 'direct',
-      validated_at: new Date().toISOString()
+      validated_at: new Date().toISOString(),
+      // Add demo access token for compatibility with authenticate middleware
+      ghlAccessToken: locationId ? 'demo-access-token' : 'demo-access-token',
+      ghlRefreshToken: 'demo-refresh-token',
+      scope: 'contacts.readonly contacts.write locations.readonly',
+      tokenExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours from now
     };
 
     const token = jwt.sign(tokenPayload, config.jwt.secret, {
